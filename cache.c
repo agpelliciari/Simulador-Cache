@@ -5,8 +5,10 @@ cache_t *armarCache(int tamanio, int cantidadSets, int lineasPorSet){
     cache->tamanio = tamanio;
     cache->cantidadSets = cantidadSets;
     cache->lineasPorSet = lineasPorSet;
-    int bytesPorBloque = tamanio / (cantidadSets*lineasPorSet);
-    cache->bytesPorBloque = bytesPorBloque;
+    cache->bytesPorBloque = tamanio / (cantidadSets*lineasPorSet);
+
+    cache->bitsByteOffset = calcularLog2(cache->bytesPorBloque);      //Obtengo cant bits para byte offset
+    cache->bitsSetOffset = calcularLog2(cache->cantidadSets);         //Obtengo cant bits para set offset
 
     array_t* sets = crearArray(cantidadSets, lineasPorSet);
     cache->sets = sets;
@@ -78,12 +80,12 @@ stats_t *crearEstadisticas(){
     return estadisticas;
 }
 
-void calcularEstadisticas(char* array[], cache_t* cache, bool esHit, bool esDirty){
+void calcularEstadisticas(char* array[], cache_t* cache, bool *esHit, bool *esDirty){
     if (strcmp(array[TIPO_OPERACION], LECTURA) == 0)
     {
         cache->estadisticas->lecturas += 1;
 
-        if (esHit)
+        if (*esHit)
         {
             cache->estadisticas->tiempoAccesoLectura += 1;
         }
@@ -92,7 +94,7 @@ void calcularEstadisticas(char* array[], cache_t* cache, bool esHit, bool esDirt
             cache->estadisticas->missesLectura += 1;
             cache->estadisticas->totalMisses += 1;
             cache->estadisticas->cantBytesLeidos += cache->bytesPorBloque;
-            if (esDirty)
+            if (*esDirty)
             {
                 cache->estadisticas->dirtyMissesLectura += 1;
                 cache->estadisticas->tiempoAccesoLectura += (1 + (2*PENALTY));
@@ -108,7 +110,7 @@ void calcularEstadisticas(char* array[], cache_t* cache, bool esHit, bool esDirt
     {
         cache->estadisticas->escrituras += 1;
         
-        if (esHit)
+        if (*esHit)
         {
             cache->estadisticas->tiempoAccesoEscritura += 1;
         }
@@ -117,7 +119,7 @@ void calcularEstadisticas(char* array[], cache_t* cache, bool esHit, bool esDirt
             cache->estadisticas->missesEscritura += 1;
             cache->estadisticas->totalMisses += 1;
             cache->estadisticas->cantBytesLeidos += cache->bytesPorBloque;
-            if (esDirty)
+            if (*esDirty)
             {
                 cache->estadisticas->dirtyMissesEscritura += 1;
                 cache->estadisticas->tiempoAccesoEscritura += (1 + (2*PENALTY));
@@ -192,65 +194,78 @@ void ingresarDato(char* array[], cache_t* cache, verboso_t* verboso, estadistica
     limpiarEstadisticas(estadisticasV, sets->transacciones);
 
     unsigned int direccMemoriaAccedida = strtoul(array[DIRECCION_ACCEDIDA], NULL, 16);
+   
+    unsigned int set = obtenerSet(cache, direccMemoriaAccedida);
+    //estadisticasV->set = set;      //VERBOSO
 
-    int bitsByteOffset = calcularLog2(cache->bytesPorBloque);                          //Obtengo cant bits para byte offset
-    int bitsSetOffset = calcularLog2(cache->cantidadSets);                             //Obtengo cant bits para set offset
-
-    unsigned int setMask = generarMascaraSet(bitsSetOffset, bitsByteOffset);
-    unsigned int tagMask = generarMascaraTag(bitsSetOffset + bitsByteOffset);
-
-    unsigned int set = (direccMemoriaAccedida & setMask) >> bitsByteOffset;
-    estadisticasV->set = set;      //VERBOSO
-    unsigned int tag = (direccMemoriaAccedida & tagMask) >> (bitsByteOffset + bitsSetOffset);
-    estadisticasV->tag = tag;      //VERBOSO
+    unsigned int tag = obtenerTag(cache, direccMemoriaAccedida);
+    //estadisticasV->tag = tag;      //VERBOSO
 
     bool esHit = false;
     bool esDirty = false;
+    
+    analizarCaso(sets, estadisticasV, array, set, tag, &esHit, &esDirty);
+
+    if (verboso != NULL && modoVerbosoActivo(verboso, cache))
+    {
+        imprimirLineaVerboso(estadisticasV, cache);
+    }
+    
+    calcularEstadisticas(array, cache, &esHit, &esDirty);
+
+    sets->transacciones++;
+}
+
+void analizarCaso(array_t *setsCache, estadisticas_verboso_t* estadisticasV, char* array[], unsigned int setAccedido, unsigned int tagAccedido, bool* esHit, bool* esDirty){
     int i = 0;
 
-    while (!esHit && i < sets[set].cantidad)
-    {
-        if (sets[set].datos[i].tag == tag)           // Logica para hit
-        {
-            estadisticasV->lastUsed = sets[set].datos[i].numTransaccion;            //VERBOSO
+    estadisticasV->set = setAccedido;      //VERBOSO
 
-            esHit = true;
-            sets[set].datos[i].numTransaccion = sets->transacciones;
+    estadisticasV->tag = tagAccedido;      //VERBOSO
+
+    while (noHit(*esHit, i, setsCache[setAccedido].cantidad))
+    {
+        if (hit(setsCache[setAccedido].datos[i].tag, tagAccedido))           // Logica para hit
+        {
+            estadisticasV->lastUsed = setsCache[setAccedido].datos[i].numTransaccion;            //VERBOSO
+
+            *esHit = true;
+            setsCache[setAccedido].datos[i].numTransaccion = setsCache->transacciones;
             
             estadisticasV->caso = HIT;             //VERBOSO
             estadisticasV->numerolinea = i;        //VERBOSO
-            estadisticasV->prevTag = tag;          //VERBOSO
+            estadisticasV->prevTag = tagAccedido;  //VERBOSO
             estadisticasV->validBit = 1;           //VERBOSO
 
-            if (sets[set].datos[i].dirtyBit)
+            if (esDirtyBit(setsCache[setAccedido].datos[i].dirtyBit))
             {
                 estadisticasV->dirtyBit = 1;        //VERBOSO
             }
             
             if (strcmp(array[TIPO_OPERACION], ESCRITURA) == 0)
             {
-                sets[set].datos[i].dirtyBit = true;
+                setsCache[setAccedido].datos[i].dirtyBit = true;
             }
         }
         
         i++;
     }
 
-    if (!esHit)                                       // Logica para miss
+    if (!(*esHit))                                                           // Logica para miss
     {
         i = 0;
         bool posicion_encontrada = false;
 
-        if (sets[set].cantidad != sets[set].tamanio)                  // Existe una linea que se encuentra vacia
+        if (hayLineaVacia(setsCache[setAccedido].cantidad, setsCache[setAccedido].tamanio))              // Existe una linea que se encuentra vacia
         {
-            while (!posicion_encontrada && i <= sets[set].cantidad)
+            while (!posicion_encontrada && i <= setsCache[setAccedido].cantidad)
             {
-                if (sets[set].datos[i].tag == LINEA_VACIA)
+                if (setsCache[setAccedido].datos[i].tag == LINEA_VACIA)
                 {
                     posicion_encontrada = true;
-                    sets[set].datos[i].tag = tag;
-                    sets[set].datos[i].numTransaccion = sets->transacciones;
-                    sets[set].cantidad++;
+                    setsCache[setAccedido].datos[i].tag = tagAccedido;
+                    setsCache[setAccedido].datos[i].numTransaccion = setsCache->transacciones;
+                    setsCache[setAccedido].cantidad++;
                     
                     estadisticasV->caso = CLEAN_MISS; //VERBOSO
                     estadisticasV->numerolinea = i;   //VERBOSO
@@ -258,7 +273,7 @@ void ingresarDato(char* array[], cache_t* cache, verboso_t* verboso, estadistica
                    
                     if (strcmp(array[TIPO_OPERACION], ESCRITURA) == 0)
                     {
-                        sets[set].datos[i].dirtyBit = true;
+                        setsCache[setAccedido].datos[i].dirtyBit = true;
                     }
                 }
             
@@ -269,9 +284,9 @@ void ingresarDato(char* array[], cache_t* cache, verboso_t* verboso, estadistica
         {
             int minimo = 0;
             i = 1;
-            while (i < sets[set].cantidad)
+            while (i < setsCache[setAccedido].cantidad)
             {
-                if (sets[set].datos[i].numTransaccion < sets[set].datos[minimo].numTransaccion)
+                if (setsCache[setAccedido].datos[i].numTransaccion < setsCache[setAccedido].datos[minimo].numTransaccion)
                 {
                     minimo = i;
                 }
@@ -281,10 +296,10 @@ void ingresarDato(char* array[], cache_t* cache, verboso_t* verboso, estadistica
                 }
             }
 
-            if (sets[set].datos[minimo].dirtyBit)
+            if (esDirtyBit(setsCache[setAccedido].datos[minimo].dirtyBit))
             {
-                sets[set].datos[minimo].dirtyBit = false;
-                esDirty = true;
+                setsCache[setAccedido].datos[minimo].dirtyBit = false;
+                *esDirty = true;
 
                 estadisticasV->caso = DIRTY_MISS;                    //VERBOSO
                 estadisticasV->dirtyBit = 1;                         //VERBOSO
@@ -294,29 +309,20 @@ void ingresarDato(char* array[], cache_t* cache, verboso_t* verboso, estadistica
                 estadisticasV->caso = CLEAN_MISS;                    //VERBOSO
             }
             
-            estadisticasV->lastUsed = sets[set].datos[minimo].numTransaccion;      //VERBOSO
-            estadisticasV->prevTag = sets[set].datos[minimo].tag;    //VERBOSO
+            estadisticasV->lastUsed = setsCache[setAccedido].datos[minimo].numTransaccion;      //VERBOSO
+            estadisticasV->prevTag = setsCache[setAccedido].datos[minimo].tag;    //VERBOSO
             estadisticasV->numerolinea = minimo;                     //VERBOSO
             estadisticasV->validBit = 1;                             //VERBOSO
 
-            sets[set].datos[minimo].tag = tag;
-            sets[set].datos[minimo].numTransaccion = sets->transacciones;
+            setsCache[setAccedido].datos[minimo].tag = tagAccedido;
+            setsCache[setAccedido].datos[minimo].numTransaccion = setsCache->transacciones;
 
             if (strcmp(array[TIPO_OPERACION], ESCRITURA) == 0)
             {
-                sets[set].datos[minimo].dirtyBit = true;
+                setsCache[setAccedido].datos[minimo].dirtyBit = true;
             }
         }
     }
-
-    if (verboso != NULL && modoVerbosoActivo(verboso, cache))
-    {
-        imprimirLineaVerboso(estadisticasV, cache);
-    }
-    
-    calcularEstadisticas(array, cache, esHit, esDirty);
-
-    sets->transacciones++;
 }
 
 verboso_t* inciarModoVerboso(int ini, int fin){
@@ -388,4 +394,36 @@ void liberarVerboso(verboso_t *verboso){
     {
         free(verboso);
     }
+}
+
+unsigned int obtenerSet(cache_t *cache, unsigned int direccMemoriaAccedida){
+    unsigned int setMask = generarMascaraSet(cache->bitsSetOffset, cache->bitsByteOffset);
+
+    unsigned int set = (direccMemoriaAccedida & setMask) >> cache->bitsByteOffset;
+
+    return set;
+}
+
+unsigned int obtenerTag(cache_t* cache, unsigned int direccMemoriaAccedida){
+    unsigned int tagMask = generarMascaraTag(cache->bitsSetOffset + cache->bitsByteOffset);
+
+    unsigned int tag = (direccMemoriaAccedida & tagMask) >> (cache->bitsByteOffset + cache->bitsSetOffset);
+
+    return tag;
+}
+
+bool noHit(bool esHit, int indiceLinea, int cantidadLineas){
+    return !esHit && indiceLinea < cantidadLineas;
+}
+
+bool hit(unsigned int tagLinea, unsigned int tagBuscado){
+    return tagLinea == tagBuscado;
+}
+
+bool hayLineaVacia(int cantidadActual, int cantidadMaxima){
+    return cantidadActual != cantidadMaxima;
+}
+
+bool esDirtyBit(bool dirty){
+    return dirty;
 }

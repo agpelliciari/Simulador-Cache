@@ -41,6 +41,8 @@ typedef struct s_cache {
 	int cantidadSets;
     int lineasPorSet;
     int bytesPorBloque;
+    int bitsByteOffset;                         
+    int bitsSetOffset;  
     array_t* sets;
     stats_t* estadisticas;
 } cache_t;
@@ -73,16 +75,26 @@ void imprimirLineaVerboso(estadisticas_verboso_t* estadisticasV, cache_t* cache)
 
 cache_t* armarCache(int tamanio, int cantidadSets, int lineasPorSet);
 void ingresarDato(char* array[], cache_t* cache, verboso_t* verboso, estadisticas_verboso_t* estadisticas);
+void analizarCaso(array_t* setsCache, estadisticas_verboso_t* estadisticasV, char* array[], unsigned int setAccedido, unsigned int tagAccedido, bool* esHit, bool* esDirty);
 void liberarCache(cache_t* cache);
 
 array_t* crearArray(int cantidad, int capacidad);
 void liberarArray(array_t* sets, cache_t* cache);
 
 stats_t* crearEstadisticas();
-void calcularEstadisticas(char* array[], cache_t* cache, bool esHit, bool esDirty);
+void calcularEstadisticas(char* array[], cache_t* cache, bool* esHit, bool* esDirty);
 void imprimirEstadisticas(cache_t* cache);
 void liberarEstadisticas(stats_t* estadisticas);
 
 //PROCESAMIENTO DE ARCHIVO
 void procesarLineas(FILE *archivo, cache_t* cache, verboso_t* verboso);
+
+//CONDICIONALES
+bool noHit(bool esHit, int indiceLinea, int cantidadLineas);
+bool hit(unsigned int tagLinea, unsigned int tagBuscado);
+bool hayLineaVacia(int cantidadActual, int cantidadMaxima);
+bool esDirtyBit(bool dirty);
+
+unsigned int obtenerSet(cache_t* cache, unsigned int direccMemoriaAccedida);
+unsigned int obtenerTag(cache_t* cache, unsigned int direccMemoriaAccedida);
 #endif
